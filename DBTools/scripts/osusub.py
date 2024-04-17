@@ -514,7 +514,7 @@ def GetListOfRemoteRootFiles(Path):
     return fileList
 
 #It generates the condor.sub file for each dataset.
-def MakeCondorSubmitScript(Dataset,NumberOfJobs,Directory,Label, SkimChannelNames, UseGridProxy, jsonFile):
+def MakeCondorSubmitScript(Dataset,NumberOfJobs,Directory,Label, SkimChannelNames, UseGridProxy, jsonFile, lxbatch=False):
     SubmitFile = open(Directory + '/condor.sub','w')
     cmsRunExecutable = os.popen('which cmsRun').read().rstrip()
     filesToTransfer = []
@@ -525,15 +525,22 @@ def MakeCondorSubmitScript(Dataset,NumberOfJobs,Directory,Label, SkimChannelName
         if 'Executable' in currentCondorSubArgumentsSet[argument] and currentCondorSubArgumentsSet[argument]['Executable'] == "":
             SubmitFile.write('Executable = condor.sh\n')
         elif 'Arguments' in currentCondorSubArgumentsSet[argument] and currentCondorSubArgumentsSet[argument]['Arguments'] == "":
-            if arguments.mergeSkim:
-                SubmitFile.write('Arguments = config_cfg.py True ' + str(NumberOfJobs) + ' $(Process) ' + Dataset + ' ' + Label + ' eventList_$(Process).txt \n\n')
+            if lxbatch:
+                SubmitFile.write('Proxy_path = ' + os.path.expanduser('~') + '/private/' + os.path.basename (proxy) + '\n')
+                if arguments.mergeSkim:
+                    SubmitFile.write('Arguments = config_cfg.py True ' + str(NumberOfJobs) + ' $(Process) ' + Dataset + ' ' + SpecialStringModifier(Label,['/'],[['-','_']]) + ' eventList_$(Process).txt $(Proxy_path)\n\n')
+                else:
+                    SubmitFile.write('Arguments = config_cfg.py True ' + str(NumberOfJobs) + ' $(Process) ' + Dataset + ' ' + SpecialStringModifier(Label,['/'],[['-','_']]) + ' $(Proxy_path)\n\n')
             else:
-                SubmitFile.write('Arguments = config_cfg.py True ' + str(NumberOfJobs) + ' $(Process) ' + Dataset + ' ' + Label + '\n\n')
+                if arguments.mergeSkim:
+                    SubmitFile.write('Arguments = config_cfg.py True ' + str(NumberOfJobs) + ' $(Process) ' + Dataset + ' ' + SpecialStringModifier(Label,['/'],[['-','_']]) + ' eventList_$(Process).txt\n\n')
+                else:
+                    SubmitFile.write('Arguments = config_cfg.py True ' + str(NumberOfJobs) + ' $(Process) ' + Dataset + ' ' + SpecialStringModifier(Label,['/'],[['-','_']]) + '\n\n')
         elif 'Transfer_Input_files' in currentCondorSubArgumentsSet[argument] and currentCondorSubArgumentsSet[argument]['Transfer_Input_files'] == "":
-            FilesToTransfer = os.environ["CMSSW_VERSION"] + '.tar.gz,condor.sh,config_cfg.py,userConfig_' + Label + '_cfg.py'
+            FilesToTransfer = os.environ["CMSSW_VERSION"] + '.tar.gz,condor.sh,config_cfg.py,userConfig_' + SpecialStringModifier(Label,['/'],[['-','_']]) + '_cfg.py'
             if Dataset != '':
-                FilesToTransfer += ',datasetInfo_' + Label + '_cfg.py'
-            if UseGridProxy:
+                FilesToTransfer += ',datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) + '_cfg.py'
+            if UseGridProxy and not lxbatch:
                 if rutgers:
                     shutil.copy (proxy, Directory + "/" + os.path.basename (proxy))
                     os.chmod (Directory + "/" + os.path.basename (proxy), 0o644)
@@ -544,7 +551,7 @@ def MakeCondorSubmitScript(Dataset,NumberOfJobs,Directory,Label, SkimChannelName
                 FilesToTransfer += ',' + jsonFile
             SubmitFile.write('should_transfer_files   = YES\n')
             SubmitFile.write('Transfer_Input_files = ' + FilesToTransfer + '\n')
-            if UseGridProxy and not rutgers:
+            if UseGridProxy and not rutgers and not lxbatch:
                 SubmitFile.write('x509userproxy = ' + proxy + '\n')
         elif 'Transfer_Output_files' in currentCondorSubArgumentsSet[argument] and currentCondorSubArgumentsSet[argument]['Transfer_Output_files'] == "":
             SubmitFile.write ('Transfer_Output_files = ')
@@ -581,6 +588,15 @@ def MakeCondorSubmitScript(Dataset,NumberOfJobs,Directory,Label, SkimChannelName
     SubmitScript.write ("(>&2 echo \"Starting job on \" `date`) # Date/time of start of job\n")
     SubmitScript.write ("(>&2 echo \"Running on: `uname -a`\") # Condor job is running on this node\n")
     SubmitScript.write ("(>&2 echo \"System software: `cat /etc/redhat-release`\") # Operating System on that node\n\n")
+    if lxbatch:
+        if arguments.mergeSkim:
+            SubmitScript.write ("export X509_USER_PROXY=$8\n")
+            SubmitScript.write ("voms-proxy-info -all\n")
+            SubmitScript.write ("voms-proxy-info -all -file $8\n\n")
+        else:
+            SubmitScript.write ("export X509_USER_PROXY=$7\n")
+            SubmitScript.write ("voms-proxy-info -all\n")
+            SubmitScript.write ("voms-proxy-info -all -file $7\n\n")
     SubmitScript.write ("Process=$4\n")
     SubmitScript.write ("RunStatus=1\n")
     SubmitScript.write ("CopyStatus=1\n")
@@ -592,11 +608,17 @@ def MakeCondorSubmitScript(Dataset,NumberOfJobs,Directory,Label, SkimChannelName
     SubmitScript.write ("rm -f " + os.environ["CMSSW_VERSION"] + ".tar.gz\n")
     SubmitScript.write ("SCRAM_ARCH=" + os.environ["SCRAM_ARCH"] + "\n")
     SubmitScript.write ("cd " + os.environ["CMSSW_VERSION"] + "/src/\n")
-    if (os.environ["CMSSW_VERSION"].startswith("CMSSW_12_4_") or os.environ["CMSSW_VERSION"].startswith ("CMSSW_13_0_")) and 'patch' not in os.environ["CMSSW_VERSION"]:
+    if os.environ["CMSSW_VERSION"].startswith("CMSSW_12_4_") and 'patch' not in os.environ["CMSSW_VERSION"]:
         SubmitScript.write ("LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/cvmfs/cms.cern.ch/slc7_amd64_gcc10/cms/cmssw/" + os.environ["CMSSW_VERSION"] + "/external/" + os.environ["SCRAM_ARCH"] + "/lib\n")
         SubmitScript.write ("echo $LD_LIBRARY_PATH\n")
-    elif (os.environ["CMSSW_VERSION"].startswith("CMSSW_12_4_") or os.environ["CMSSW_VERSION"].startswith ("CMSSW_13_0_")) and 'patch' in os.environ["CMSSW_VERSION"]:
+    elif os.environ["CMSSW_VERSION"].startswith ("CMSSW_13_0_") and 'patch' not in os.environ["CMSSW_VERSION"]:
+        SubmitScript.write ("LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/cvmfs/cms.cern.ch/el8_amd64_gcc11/cms/cmssw/" + os.environ["CMSSW_VERSION"] + "/external/" + os.environ["SCRAM_ARCH"] + "/lib\n")
+        SubmitScript.write ("echo $LD_LIBRARY_PATH\n")
+    elif os.environ["CMSSW_VERSION"].startswith("CMSSW_12_4_") and 'patch' in os.environ["CMSSW_VERSION"]:
         SubmitScript.write ("LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/cvmfs/cms.cern.ch/slc7_amd64_gcc10/cms/cmssw-patch/" + os.environ["CMSSW_VERSION"] + "/external/" + os.environ["SCRAM_ARCH"] + "/lib\n")
+        SubmitScript.write ("echo $LD_LIBRARY_PATH\n")
+    elif os.environ["CMSSW_VERSION"].startswith ("CMSSW_13_0_") and 'patch' in os.environ["CMSSW_VERSION"]:
+        SubmitScript.write ("LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/cvmfs/cms.cern.ch/el8_amd64_gcc11/cms/cmssw-patch/" + os.environ["CMSSW_VERSION"] + "/external/" + os.environ["SCRAM_ARCH"] + "/lib\n")
         SubmitScript.write ("echo $LD_LIBRARY_PATH\n")        
     SubmitScript.write ("echo $CMSSW_BASE \n")
     SubmitScript.write ("echo $PWD \n")
@@ -755,14 +777,14 @@ def MakeSpecificConfig(Dataset, Directory, SkimDirectory, Label, SkimChannelName
     ConfigFile.write('osusub.randomNumberSuffix = ' + str (randomNumberSuffix) + '\n')
     ConfigFile.write('import re\n')
     ConfigFile.write('import os\n')
-    ConfigFile.write('import userConfig_' + Label + '_cfg as pset\n')
+    ConfigFile.write('import userConfig_' + SpecialStringModifier(Label,['/'],[['-','_']]) + '_cfg as pset\n')
     if jsonFile != '':
         ConfigFile.write('import FWCore.PythonUtilities.LumiList as LumiList\n')
         ConfigFile.write('myLumis = LumiList.LumiList(filename = \'' + str(jsonFile) + '\').getCMSSWString().split(\',\')\n')
     ConfigFile.write('\n')
     if not Generic:
         if len(SkimChannelNames) == 0:
-            SkimChannelNames = SkimChannelFinder('userConfig_' + Label + '_cfg', Directory, temPset)
+            SkimChannelNames = SkimChannelFinder('userConfig_' + SpecialStringModifier(Label,['/'],[['-','_']]) + '_cfg', Directory, temPset)
             for channelName in SkimChannelNames:
                 if not channelName == '':
                     if not SkimDirectory and not os.path.exists(Directory + '/' + channelName):
@@ -775,9 +797,9 @@ def MakeSpecificConfig(Dataset, Directory, SkimDirectory, Label, SkimChannelName
 
                     # Create an extra copy in the skim directory, in case a user later wants to run over this skim remotely via xrootd
                     if lpcCAF and os.path.realpath(Directory + '/' + channelName + '/').startswith('/eos/uscms'):
-                        subprocess.call('xrdcp ' + Directory + '/datasetInfo_' + dataset + '_cfg.py root://cmseos.fnal.gov/' + os.path.realpath(Directory + '/' + channelName + '/'), shell = True)
+                        subprocess.call('xrdcp ' + Directory + '/datasetInfo_' + SpecialStringModifier(dataset,['/'],[['-','_']]) + '_cfg.py root://cmseos.fnal.gov/' + os.path.realpath(Directory + '/' + channelName + '/'), shell = True)
                     else:
-                        subprocess.call('cp ' + Directory + '/datasetInfo_' + dataset + '_cfg.py ' + Directory + '/' + channelName + '/', shell = True)
+                        subprocess.call('cp ' + Directory + '/datasetInfo_' + SpecialStringModifier(dataset,['/'],[['-','_']]) + '_cfg.py ' + Directory + '/' + channelName + '/', shell = True)
         else:
             for channelName in SkimChannelNames:
                 if not channelName == '':
@@ -791,9 +813,9 @@ def MakeSpecificConfig(Dataset, Directory, SkimDirectory, Label, SkimChannelName
 
                     # Create an extra copy in the skim directory, in case a user later wants to run over this skim remotely via xrootd
                     if lpcCAF and os.path.realpath(Directory + '/' + channelName + '/').startswith('/eos/uscms'):
-                        subprocess.call('xrdcp ' + Directory + '/datasetInfo_' + dataset + '_cfg.py root://cmseos.fnal.gov/' + os.path.realpath(Directory + '/' + channelName + '/'), shell = True)
+                        subprocess.call('xrdcp ' + Directory + '/datasetInfo_' + SpecialStringModifier(dataset,['/'],[['-','_']]) + '_cfg.py root://cmseos.fnal.gov/' + os.path.realpath(Directory + '/' + channelName + '/'), shell = True)
                     else:
-                        subprocess.call('cp ' + Directory + '/datasetInfo_' + dataset + '_cfg.py ' + Directory + '/' + channelName + '/', shell = True)
+                        subprocess.call('cp ' + Directory + '/datasetInfo_' + SpecialStringModifier(dataset,['/'],[['-','_']]) + '_cfg.py ' + Directory + '/' + channelName + '/', shell = True)
 
     ConfigFile.write('fileName = \'hist_\' + str (osusub.jobNumber) + \'.root\'\n')
     ConfigFile.write('pset.' + arguments.FileName + ' = fileName\n')
@@ -928,7 +950,7 @@ def MakeFileList(Dataset, FileType, Directory, Label, UseAAA, crossSection):
     datasetRead = {}
     datasetRead['useAAA'] = UseAAA
     runList = []
-    datasetInfoName = Directory + '/datasetInfo_' + Label + '_cfg.py'
+    datasetInfoName = Directory + '/datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) + '_cfg.py'
     SkimExists = RunOverSkim and os.path.isdir (Condor + arguments.SkimDirectory + '/' + Label + '/' + arguments.SkimChannel)
     InitializeAAA = ""
     if UseAAA:
@@ -1104,15 +1126,15 @@ def MakeFileList(Dataset, FileType, Directory, Label, UseAAA, crossSection):
             SkimDirectory = Condor + str(arguments.SkimDirectory) + '/' + str(Label) + '/'
             secondaryCollectionModifications = SecondaryCollectionInstance(SkimDirectory, arguments.SkimChannel)
             #Copy the datasetInfo file from the skim directory.
-            shutil.copy (SkimDirectory + 'datasetInfo_' + Label + '_cfg.py', datasetInfoName)
+            shutil.copy (SkimDirectory + 'datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) + '_cfg.py', datasetInfoName)
             #Modidy the datasetInfo file copied so that it can be used by the jobs running over skims. Also update the crossSection here.
             SkimModifier(Label, Directory, crossSection)
             InitializeAAA = ""
 
         sys.path.append(Directory)
-        datasetSpec = importlib.util.spec_from_file_location('datasetInfo_' + Label +'_cfg', Directory + '/' + 'datasetInfo_' + Label +'_cfg.py')
+        datasetSpec = importlib.util.spec_from_file_location('datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) +'_cfg', Directory + '/' + 'datasetInfo_' + Label +'_cfg.py')
         datasetInfo = importlib.util.module_from_spec(datasetSpec)
-        sys.modules['datasetInfo_' + Label +'_cfg'] = datasetInfo
+        sys.modules['datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) +'_cfg'] = datasetInfo
         datasetSpec.loader.exec_module(datasetInfo)
         #exec('import datasetInfo_' + Label +'_cfg as datasetInfo')
         if not UseAAA and InitializeAAA == "" and not RunOverSkim:
@@ -1178,15 +1200,15 @@ def MakeFileList(Dataset, FileType, Directory, Label, UseAAA, crossSection):
             SkimDirectory = Condor + str(arguments.SkimDirectory) + '/' + str(Label) + '/'
             secondaryCollectionModifications = SecondaryCollectionInstance(SkimDirectory, arguments.SkimChannel)
             #Copy the datasetInfo file from the skim directory.
-            shutil.copy (SkimDirectory + 'datasetInfo_' + Label + '_cfg.py', datasetInfoName)
+            shutil.copy (SkimDirectory + 'datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) + '_cfg.py', datasetInfoName)
             #Modidy the datasetInfo file copied so that it can be used by the jobs running over skims. Also update the crossSection here.
             SkimModifier(Label, Directory, crossSection)
             InitializeAAA = ""
 
         sys.path.append(Directory)
-        datasetSpec = importlib.util.spec_from_file_location('datasetInfo_' + Label +'_cfg', Directory + '/' + 'datasetInfo_' + Label +'_cfg.py')
+        datasetSpec = importlib.util.spec_from_file_location('datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) +'_cfg', Directory + '/' + 'datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) +'_cfg.py')
         datasetInfo = importlib.util.module_from_spec(datasetSpec)
-        sys.modules['datasetInfo_' + Label +'_cfg'] = datasetInfo
+        sys.modules['datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) +'_cfg'] = datasetInfo
         datasetSpec.loader.exec_module(datasetInfo)
 
         #print(Directory in sys.path) # To be removed
@@ -1213,23 +1235,25 @@ def MakeFileList(Dataset, FileType, Directory, Label, UseAAA, crossSection):
 
     return  datasetRead
 
-def MakeBatchJobFile(WorkDir, Queue, NumberOfJobs):
-    LxBatchSubFile = open(currentDir + WorkDir + '/lxbatchSub.sh','w')
-    LxBatchSubFile.write('#!/bin/sh\n')
-    LxBatchSubFile.write('for i in {1..' + NumberOfJobs + '}\n')
-    LxBatchSubFile.write('do\n')
-    LxBatchSubFile.write(' bsub -q ' + Queue + ' -oo ' + currentDir + '/' + WorkDir + '/lxbatch_\$i.log ' + currentDir + '/' + WorkDir + '/lxbatchRun.sh \$i\n')
-    LxBatchSubFile.write('done\n')
-    LxBatchSubFile.write('echo \"Finished submitting ' + NumberOfJobs + ' jobs.\"\n')
-    LxBatchSubFile.close()
-    LxBatchRunFile = open(currentDir + WorkDir + '/lxbatchRun.sh','w')
-    LxBatchRunFile.write('#!/bin/sh\n')
-    LxBatchRunFile.write('cd ' + currentDir + '/' + WorkDir + '\n')
-    LxBatchRunFile.write('eval `scram runtime -sh`\n')
-    LxBatchRunFile.write('cmsRun config_cfg.py True ' + NumberOfJobs + ' \$1 NULL NULL\n')
-    LxBatchRunFile.close()
-    os.chmod (currentDir + '/' + WorkDir + '/lxbatchRun.sh', 0o755)
-    os.chmod (currentDir + '/' + WorkDir + '/lxbatchSub.sh', 0o755)
+# TODO: bsub is not available anymore in lxplus; the batch job submission is also made via condor
+# in a very similar way to what is done in the T3. These commented lines can probably be removed
+# def MakeBatchJobFile(WorkDir, Queue, NumberOfJobs):
+#    LxBatchSubFile = open(currentDir + WorkDir + '/lxbatchSub.sh','w')
+#    LxBatchSubFile.write('#!/bin/sh\n')
+#    LxBatchSubFile.write('for i in {1..' + NumberOfJobs + '}\n')
+#    LxBatchSubFile.write('do\n')
+#    LxBatchSubFile.write(' bsub -q ' + Queue + ' -oo ' + currentDir + '/' + WorkDir + '/lxbatch_\$i.log ' + currentDir + '/' + WorkDir + '/lxbatchRun.sh \$i\n')
+#    LxBatchSubFile.write('done\n')
+#    LxBatchSubFile.write('echo \"Finished submitting ' + NumberOfJobs + ' jobs.\"\n')
+#    LxBatchSubFile.close()
+#    LxBatchRunFile = open(currentDir + WorkDir + '/lxbatchRun.sh','w')
+#    LxBatchRunFile.write('#!/bin/sh\n')
+#    LxBatchRunFile.write('cd ' + currentDir + '/' + WorkDir + '\n')
+#    LxBatchRunFile.write('eval `scram runtime -sh`\n')
+#    LxBatchRunFile.write('cmsRun config_cfg.py True ' + NumberOfJobs + ' \$1 NULL NULL\n')
+#    LxBatchRunFile.close()
+#    os.chmod (currentDir + '/' + WorkDir + '/lxbatchRun.sh', 0o755)
+#    os.chmod (currentDir + '/' + WorkDir + '/lxbatchSub.sh', 0o755)
 
 ###############################################################################
 #        Function to find all the skim channels from the userConfig.          #
@@ -1258,7 +1282,7 @@ def SkimModifier(Label, Directory, crossSection, isRemote = False):
         OriginalNumberOfEvents = os.popen('cat ' + SkimDirectory + '/OriginalNumberOfEvents.txt').read().split()[0] if os.path.isfile (SkimDirectory + '/OriginalNumberOfEvents.txt') else 0.0
         SkimNumberOfEvents     = os.popen('cat ' + SkimDirectory + '/SkimNumberOfEvents.txt').read().split()[0] if os.path.isfile (SkimDirectory + '/SkimNumberOfEvents.txt') else 0.0
 
-    infoFile = Directory + '/datasetInfo_' + Label + '_cfg.py'
+    infoFile = Directory + '/datasetInfo_' + SpecialStringModifier(Label,['/'],[['-','_']]) + '_cfg.py'
     fin = open(infoFile, "r")
     orig = fin.read()
     fin.close()
@@ -1642,7 +1666,7 @@ if not arguments.Resubmit:
                 NumberOfJobs = NumberOfFiles
 
             RealMaxEvents = EventsPerJob*NumberOfJobs
-            userConfig = 'userConfig_' + dataset + '_cfg.py'
+            userConfig = 'userConfig_' + SpecialStringModifier(dataset,['/'],[['-','_']]) + '_cfg.py'
             shutil.copy (Config, WorkDir + '/' + userConfig)
             if 'secondaryCollections' in DatasetRead:
                 ModifyUserConfigForSecondaryCollections(WorkDir + '/' + userConfig, DatasetRead['secondaryCollections'])
@@ -1654,7 +1678,8 @@ if not arguments.Resubmit:
             SkimChannelNames = MakeSpecificConfig(DatasetRead['realDatasetName'], WorkDir, SkimDir, dataset, SkimChannelNames, jsonFile, temPset, lpcCAF)
 
             if lxbatch:
-                MakeBatchJobFile(WorkDir, Queue, NumberOfJobs)
+                MakeCondorSubmitScript(DatasetRead['realDatasetName'],NumberOfJobs,WorkDir,dataset, SkimChannelNames, UseGridProxy, jsonFile, lxbatch)
+                MakeCondorSubmitRelease(WorkDir)
             else:
                 MakeCondorSubmitScript(DatasetRead['realDatasetName'],NumberOfJobs,WorkDir,dataset, SkimChannelNames, UseGridProxy, jsonFile)
                 MakeCondorSubmitRelease(WorkDir)
@@ -1665,7 +1690,10 @@ if not arguments.Resubmit:
                 else:
                     print('Submitting ' + str(NumberOfJobs) +  ' jobs to run on all events in ' + str(DatasetRead['numberOfFiles'])  +' files for ' + str(dataset) + ' dataset...\n')
                 if lxbatch:
-                    os.syetem('./lxbatchSub.sh')
+                    os.symlink ("../" + os.environ["CMSSW_VERSION"] + ".tar.gz", os.environ["CMSSW_VERSION"] + ".tar.gz")
+                    shutil.copy(proxy,os.path.expanduser('~') + "/private/") # The user need a private folder in lxplus home
+                    cmd = "LD_LIBRARY_PATH= condor_submit condor.sub"
+                    subprocess.call(cmd, shell = True)
                 else:
                     os.symlink ("../" + os.environ["CMSSW_VERSION"] + ".tar.gz", os.environ["CMSSW_VERSION"] + ".tar.gz")
                     cmd = "LD_LIBRARY_PATH= condor_submit condor.sub"
@@ -1698,7 +1726,7 @@ if not arguments.Resubmit:
         SkimDir = HadoopDir
         if arguments.localConfig:
             GetCompleteOrderedArgumentsSet(InputCondorArguments, currentCondorSubArgumentsSet)
-        userConfig = 'userConfig_' + Label + '_cfg.py'
+        userConfig = 'userConfig_' + SpecialStringModifier(Label,['/'],[['-','_']]) + '_cfg.py'
         shutil.copy (Config, WorkDir + "/" + userConfig)
         tmpDir = re.sub(r"(.*)\.py$", r"\1", Config)
         tmpDir = tmpDir.replace("/", ".")
@@ -1707,7 +1735,8 @@ if not arguments.Resubmit:
         MakeSpecificConfig('', WorkDir, SkimDir, Label, SkimChannelNames, '', temPset, lpcCAF)
 
         if lxbatch:
-            MakeBatchJobFile(WorkDir, Queue, NumberOfJobs)
+            MakeCondorSubmitScript('',NumberOfJobs,WorkDir,Label, SkimChannelNames, UseGridProxy,'',lxbatch)
+            MakeCondorSubmitRelease(WorkDir)
         else:
             MakeCondorSubmitScript('',NumberOfJobs,WorkDir,Label, SkimChannelNames, UseGridProxy,'')
             MakeCondorSubmitRelease(WorkDir)
@@ -1715,7 +1744,10 @@ if not arguments.Resubmit:
             os.chdir(os.path.realpath(WorkDir))
             print('Submitting ' + str(NumberOfJobs) +  ' jobs to run ' + str(RealMaxEvents)  + ' events for ' + str(Config) + '...\n')
             if lxbatch:
-                os.syetem('./lxbatchSub.sh')
+                os.symlink ("../" + os.environ["CMSSW_VERSION"] + ".tar.gz", os.environ["CMSSW_VERSION"] + ".tar.gz")
+                shutil.copy(proxy)
+                cmd = "LD_LIBRARY_PATH= condor_submit condor.sub"
+                subprocess.call(cmd, shell = True)
             else:
                 os.symlink ("../" + os.environ["CMSSW_VERSION"] + ".tar.gz", os.environ["CMSSW_VERSION"] + ".tar.gz")
                 cmd = "LD_LIBRARY_PATH= condor_submit condor.sub"
